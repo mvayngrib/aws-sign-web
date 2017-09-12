@@ -1,3 +1,6 @@
+const parseUrl = require('url').parse
+const extend = require('deep-extend')
+
 //
 // AWS Signature v4 Implementation for Web Browsers
 //
@@ -26,8 +29,8 @@
         service: 'execute-api',
         defaultContentType: 'application/json',
         defaultAcceptType: 'application/json',
+        defaultExpectType: '100-continue',
         payloadSerializerFactory: JsonPayloadSerializer,
-        uriParserFactory: SimpleUriParser,
         hasherFactory: CryptoJSHasher
     };
 
@@ -45,7 +48,6 @@
         this.config = extend({}, defaultConfig, config);
         this.payloadSerializer = this.config.payloadSerializer ||
             this.config.payloadSerializerFactory();
-        this.uriParser = this.config.uriParserFactory();
         this.hasher = this.config.hasherFactory();
         assertRequired(this.config.accessKeyId, 'AwsSigner requires AWS AccessKeyID');
         assertRequired(this.config.secretAccessKey, 'AwsSigner requires AWS SecretAccessKey');
@@ -70,21 +72,27 @@
      * @returns Signed request headers.
      */
     AwsSigner.prototype.sign = function (request, signDate) {
+        var uri = parseUrl(request.url)
+        if (!uri.query) uri.query = {}
         var workingSet = {
             request: extend({}, request),
             signDate: signDate || new Date(),
-            uri: this.uriParser(request.url)
+            uri
         };
+
         prepare(this, workingSet);
         buildCanonicalRequest(this, workingSet);    // Step1: build the canonical request
         buildStringToSign(this, workingSet);        // Step2: build the string to sign
         calculateSignature(this, workingSet);       // Step3: calculate the signature hash
         buildSignatureHeader(this, workingSet);     // Step4: build the authorization header
         return {
-            'Accept': workingSet.request.headers['accept'],
-            'Authorization': workingSet.authorization,
-            'Content-Type': workingSet.request.headers['content-type'],
+            'accept': workingSet.request.headers['accept'],
+            'expect': workingSet.request.headers['expect'],
+            'authorization': workingSet.authorization,
+            'content-type': workingSet.request.headers['content-type'],
+            'content-length': workingSet.request.headers['content-length'],
             'x-amz-date': workingSet.request.headers['x-amz-date'],
+            // 'x-amz-content-sha256': workingSet.request.headers['x-amz-content-sha256'],
             'x-amz-security-token': this.config.sessionToken || undefined
         };
     };
@@ -95,6 +103,7 @@
             'host': ws.uri.host,
             'content-type': self.config.defaultContentType,
             'accept': self.config.defaultAcceptType,
+            'expect': self.config.defaultExpectType,
             'x-amz-date': amzDate(ws.signDate)
         };
         // Payload or not?
@@ -121,7 +130,7 @@
         }
         // Merge params to query params
         if (typeof(ws.request.params) === 'object') {
-            extend(ws.uri.queryParams, ws.request.params);
+            extend(ws.uri.query, ws.request.params);
         }
     }
 
@@ -136,9 +145,9 @@
                 return encodeURIComponent(seg);
             }).join('/') + '\n' +
                 // Canonical Query String:
-            Object.keys(ws.uri.queryParams).sort().map(function (key) {
+            Object.keys(ws.uri.query).sort().map(function (key) {
                 return encodeURIComponent(key) + '=' +
-                    encodeURIComponent(ws.uri.queryParams[key]);
+                    encodeURIComponent(ws.uri.query[key]);
             }).join('&') + '\n' +
                 // Canonical Headers:
             ws.sortedHeaderKeys.map(function (key) {
@@ -146,8 +155,10 @@
             }).join('\n') + '\n\n' +
                 // Signed Headers:
             ws.signedHeaders + '\n' +
-                // Hashed Payload
-            self.hasher.hash((ws.payload) ? ws.payload : '');
+                // Hashed Payload or 'UNSIGNED-PAYLOAD'
+            (ws.request.headers['x-amz-content-sha256'] === 'UNSIGNED-PAYLOAD'
+                ? 'UNSIGNED-PAYLOAD'
+                : self.hasher.hash((ws.payload) ? ws.payload : ''));
     }
 
     // Construct the string that will be signed.
@@ -211,44 +222,6 @@
     }
 
     /**
-     * Simple URI parser factory.
-     * Uses an `a` document element for parsing given URIs.
-     * Therefore it most likely will only work in a web browser.
-     */
-    function SimpleUriParser() {
-        var parser = document ? document.createElement('a') : {};
-
-        /**
-         * Parse the given URI.
-         * @param {string} uri The URI to parse.
-         * @returns JavaScript object with the parse results:
-         * `protocol`: The URI protocol part.
-         * `host`: Host part of the URI.
-         * `path`: Path part of the URI, always starting with a `/`
-         * `queryParams`: Query parameters as JavaScript object.
-         */
-        return function (uri) {
-            parser.href = uri;
-            return {
-                protocol: parser.protocol,
-                host: parser.host.replace(/^(.*):((80)|(443))$/, '$1'),
-                path: ((parser.pathname.charAt(0) !== '/') ? '/' : '') + parser.pathname,
-                queryParams: extractQueryParams(parser.search)
-            };
-        };
-
-        function extractQueryParams(search) {
-            return /^\??(.*)$/.exec(search)[1].split('&').reduce(function (result, arg) {
-                arg = /^(.+)=(.*)$/.exec(arg);
-                if (arg) {
-                    result[arg[1]] = arg[2];
-                }
-                return result;
-            }, {});
-        }
-    }
-
-    /**
      * Hash factory implementation using the SHA-256 hash algorithm of CryptoJS.
      * Requires at least the CryptoJS rollups: `sha256.js` and `hmac-sha256.js`.
      */
@@ -292,31 +265,6 @@
                 return hmac;
             }
         };
-    }
-
-    // Simple version of the `extend` function, known from Angular and Backbone.
-    // It merges the second (and all succeeding) argument(s) into the object, given as first
-    // argument. This is done recursively for all child objects, as well.
-    function extend(dest) {
-        var objs = [].slice.call(arguments, 1);
-        objs.forEach(function (obj) {
-            if (!obj || typeof(obj) !== 'object') {
-                return;
-            }
-            Object.keys(obj).forEach(function (key) {
-                var src = obj[key];
-                if (typeof(src) === 'undefined') {
-                    return;
-                }
-                if (src !== null && typeof(src) === 'object') {
-                    dest[key] = (Array.isArray(src) ? [] : {});
-                    extend(dest[key], src);
-                } else {
-                    dest[key] = src;
-                }
-            });
-        });
-        return dest;
     }
 
     // Throw an error if the given object is undefined.
