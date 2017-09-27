@@ -149,7 +149,7 @@ function buildCanonicalRequest(self, ws) {
             // Hashed Payload or 'UNSIGNED-PAYLOAD'
         (ws.request.headers['x-amz-content-sha256'] === 'UNSIGNED-PAYLOAD'
             ? 'UNSIGNED-PAYLOAD'
-            : this.hasher.hash((ws.payload) ? ws.payload : '')).toString('hex')
+            : self.hasher.hash((ws.payload) ? ws.payload : '')).toString('hex')
     ].join('\n')
 }
 
