@@ -1,6 +1,7 @@
 const crypto = require('crypto')
 const parseUrl = require('url').parse
 const extend = require('deep-extend')
+const pick = require('object.pick')
 
 //
 // AWS Signature v4 Implementation
@@ -20,7 +21,6 @@ const defaultConfig = {
     service: 'execute-api',
     defaultContentType: 'application/json',
     defaultAcceptType: 'application/json',
-    defaultExpectType: '100-continue',
     payloadSerializerFactory: () => obj => JSON.stringify(obj),
     hasherFactory: () => ({ hash: sha256 })
 }
@@ -76,16 +76,21 @@ AwsSigner.prototype.sign = function (request, signDate) {
     buildStringToSign(this, workingSet)        // Step2: build the string to sign
     calculateSignature(this, workingSet)       // Step3: calculate the signature hash
     buildSignatureHeader(this, workingSet)     // Step4: build the authorization header
-    return {
-        'accept': workingSet.request.headers['accept'],
-        'expect': workingSet.request.headers['expect'],
-        'authorization': workingSet.authorization,
-        'content-type': workingSet.request.headers['content-type'],
-        'content-length': workingSet.request.headers['content-length'],
-        'x-amz-date': workingSet.request.headers['x-amz-date'],
-        'x-amz-content-sha256': workingSet.request.headers['x-amz-content-sha256'] || undefined,
-        'x-amz-security-token': this.config.sessionToken || undefined
+    const ret = pick(workingSet.request.headers, [
+        'accept',
+        'expect',
+        'content-type',
+        'content-length',
+        'x-amz-date',
+        'x-amz-content-sha256'
+    ])
+
+    ret.authorization = workingSet.authorization;
+    if (this.config.sessionToken) {
+        ret['x-amz-security-token'] = this.config.sessionToken
     }
+
+    return ret
 }
 
 // Some preparations
@@ -94,7 +99,6 @@ function prepare(self, ws) {
         'host': ws.uri.host,
         'content-type': self.config.defaultContentType,
         'accept': self.config.defaultAcceptType,
-        'expect': self.config.defaultExpectType,
         'x-amz-date': amzDate(ws.signDate)
     }
     // Payload or not?
